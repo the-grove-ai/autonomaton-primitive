@@ -1,0 +1,220 @@
+"""
+Pytest configuration and shared fixtures.
+
+Telemetry-based test fixtures for the Autonomaton
+reference implementation. ALL architecture tests run against the
+reference profile — the naked engine with no domain assumptions.
+
+Profile Isolation (Invariant #6): The engine is domain-agnostic.
+Architecture tests prove this by testing the reference profile,
+which has no domain config, no startup ceremonies, no skills.
+"""
+
+import pytest
+import sys
+import yaml
+from pathlib import Path
+from unittest.mock import patch
+
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+
+# =========================================================================
+# Pipeline Stage Constants
+# =========================================================================
+
+# The five canonical pipeline stages (white paper Part III: "The Pipeline").
+# Tests filter telemetry for these stages to enforce the hourglass invariant.
+PIPELINE_STAGES = {"telemetry", "recognition", "compilation", "approval", "execution"}
+
+
+
+# =========================================================================
+# Profile Setup — Reference Profile for ALL Architecture Tests
+# =========================================================================
+
+def _load_profile_handlers():
+    """
+    Load domain handlers from the active profile's handlers.py.
+
+    Profiles can provide handlers.py with a register(dispatcher) function.
+    This keeps domain logic in profiles, not engine code.
+    """
+    import importlib.util
+    from engine.profile import get_profile_path
+    from engine.dispatcher import get_dispatcher
+
+    handlers_path = get_profile_path() / "handlers.py"
+    if not handlers_path.exists():
+        return  # No profile handlers - using engine-core only
+
+    spec = importlib.util.spec_from_file_location("profile_handlers", handlers_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    if hasattr(module, "register"):
+        dispatcher = get_dispatcher()
+        module.register(dispatcher)
+
+
+@pytest.fixture(autouse=True)
+def setup_reference_profile():
+    """
+    Set the reference profile before each test. Auto-applied.
+
+    White paper Part VIII: "You spent a weekend. You built what most
+    enterprise AI teams haven't built after months." The reference
+    profile IS the weekend build. Architecture tests validate it.
+
+    Also clears the pattern cache to prevent cross-test contamination.
+    Fate-Sharing (TCP/IP paper §III): each test maintains its own state.
+
+    Reset dispatcher and load profile handlers after profile change.
+    """
+    from engine.profile import set_profile, get_config_dir
+    from engine.dispatcher import reset_dispatcher
+
+    # Reset dispatcher to clear any previously loaded handlers
+    reset_dispatcher()
+
+    set_profile("reference")
+
+    # Load profile handlers (domain handlers in profiles/)
+    _load_profile_handlers()
+
+    # Save and clear pattern cache before each test
+    cache_path = get_config_dir() / "pattern_cache.yaml"
+    original_cache = None
+    if cache_path.exists():
+        original_cache = cache_path.read_text(encoding="utf-8")
+        with open(cache_path, "w", encoding="utf-8") as f:
+            yaml.dump({"cache": {}}, f, default_flow_style=False)
+
+    yield
+
+    # Restore original cache after test
+    if original_cache is not None:
+        cache_path.write_text(original_cache, encoding="utf-8")
+    elif cache_path.exists():
+        with open(cache_path, "w", encoding="utf-8") as f:
+            yaml.dump({"cache": {}}, f, default_flow_style=False)
+
+    # Reset router cache
+    try:
+        from engine.cognitive_router import reset_router
+        reset_router()
+    except ImportError:
+        pass
+
+    # Reset dispatcher for next test
+    reset_dispatcher()
+
+
+
+# =========================================================================
+# Telemetry-Based Test Fixtures
+# =========================================================================
+
+@pytest.fixture
+def telemetry_sink():
+    """
+    Captures telemetry entries in memory for assertion.
+
+    Feed-First Telemetry (white paper Part III): "The telemetry stream
+    is the single source of truth for audit, learning, and observability."
+
+    Tests read traces and assert on structured properties. The trace IS
+    the contract. Glass is presentation.
+    """
+    entries = []
+
+    def capture_log_event(**kwargs):
+        from engine.telemetry import create_event
+        event = create_event(**kwargs)
+        entries.append(event)
+        return event
+
+    with patch('engine.pipeline.log_event', side_effect=capture_log_event):
+        with patch('engine.telemetry.log_event', side_effect=capture_log_event):
+            yield entries
+
+
+@pytest.fixture
+def mock_llm():
+    """
+    Returns deterministic LLM responses. Queue strings for sequential calls.
+
+    Model Independence (Principle 7, white paper Part IX): "The system's
+    intelligence lives in its architecture, not its model." Tests mock
+    the LLM because the pipeline doesn't care which model responded.
+
+    Accepts the FULL call_llm signature: prompt, tier, intent, system,
+    max_tokens. Handlers like general_chat pass system prompts.
+    """
+    responses = []
+
+    def _mock_call(prompt, tier=2, intent="", system=None, max_tokens=None):
+        if responses:
+            return responses.pop(0)
+        return "Mocked LLM response."
+
+    with patch('engine.llm_client.call_llm', side_effect=_mock_call):
+        yield responses
+
+
+@pytest.fixture
+def mock_ux_input():
+    """
+    Simulates operator choices at Kaizen prompts.
+
+    Digital Jidoka principle: the system stops when uncertain.
+    The Andon Gate fires via ask_jidoka(); these mocks supply
+    the operator's menu selections to exercise each consent path.
+
+    Queue choices in the order they'll be requested:
+        "1" = Sonnet, "2" = Opus, "3" = local context, "4" = config menu, "5" = cancel
+
+    Updated signature — removed config=, added kaizen_prompt, payload, options_config.
+    """
+    choices = []
+
+    def _mock_jidoka(context_message, options, diagnostic=None,
+                     kaizen_prompt=None, payload=None, options_config=None):
+        if choices:
+            return choices.pop(0)
+        return "1"
+
+    with patch('engine.ux.ask_jidoka', side_effect=_mock_jidoka):
+        yield choices
+
+
+
+# =========================================================================
+# Profile Fixtures (Domain handlers in profiles/)
+# =========================================================================
+
+# The reference profile is the canonical test profile.
+
+
+# =========================================================================
+# Legacy Fixtures (retained for backward compatibility)
+# =========================================================================
+
+@pytest.fixture
+def mock_jidoka_approve():
+    """Auto-approve Andon Gate prompts for testing yellow/red zone commands.
+
+    Patches where the function is USED (pipeline.py), not where it's DEFINED.
+    This is required because pipeline.py uses: from engine.ux import confirm_yellow_zone
+    """
+    with patch('engine.pipeline.confirm_yellow_zone', return_value=True):
+        yield
+
+
+@pytest.fixture
+def mock_jidoka_reject():
+    """Auto-reject Andon Gate prompts for testing rejection flows."""
+    with patch('engine.pipeline.confirm_yellow_zone', return_value=False):
+        yield

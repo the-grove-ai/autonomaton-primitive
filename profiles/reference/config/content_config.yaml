@@ -1,0 +1,4 @@
+# content_config.yaml — Reference profile (minimal)
+# OOBE: This file supports the content engine.
+# Core pattern requires only: routing.config, zones.schema, telemetry.jsonl
+default_tone: "Professional and helpful"

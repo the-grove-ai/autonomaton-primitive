@@ -1,0 +1,30 @@
+# kaizen.yaml
+# Kaizen improvement proposal options.
+# Content only — the Andon display frame is pipeline infrastructure.
+# Options rendered inside the Kaizen beat when intent is unknown.
+
+kaizen:
+  prompt: "How should we route this?"
+  classification_tier: 1
+
+  options:
+    "1":
+      label: "Sonnet  (fast,  ~${total_cost})"
+      capability: llm_classify
+      classification_tier: 1
+      response_tier: 2
+    "2":
+      label: "Opus    (deep,  ~${total_cost})"
+      capability: llm_classify
+      classification_tier: 1
+      response_tier: 3
+    "3":
+      label: "Local dock       $0.00"
+      capability: local_context
+      tier: 1
+    "4":
+      label: "Show capabilities"
+      capability: config_menu
+    "5":
+      label: "Let me rephrase"
+      capability: cancel

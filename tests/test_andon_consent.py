@@ -1,0 +1,190 @@
+"""
+test_andon_consent.py - Andon Gate Tests
+
+Tests 2 and 6: Andon Gate consent flow.
+
+White paper Part II ("Where Jidoka Meets Kaizen"): "When a machine detects
+a quality problem, it stops the production line automatically and signals
+for human intervention."
+
+White paper Part III ("Sovereignty Guardrails"): "The system's self-improvement
+never exceeds the boundaries the human sets."
+
+Assert on telemetry traces, not terminal output.
+"""
+
+import pytest
+from unittest.mock import patch
+from tests.conftest import PIPELINE_STAGES
+
+
+class TestAndonGate:
+    """
+    Test 2: Andon Gate — Unknown Input Stops the Line
+
+    Digital Jidoka principle: the system stops when uncertain.
+    The Andon Gate fires, presenting Kaizen options. Unknown input
+    triggers the consent mechanism, not silent fallback.
+    """
+
+    def test_unknown_input_stops_the_line(self, telemetry_sink, mock_ux_input):
+        """
+        Option 3 (local context): system answers from dock without LLM spend.
+
+        White paper Part III ("Digital Jidoka"): "No confident output from
+        an uncertain pipeline."
+
+        Option numbering accounts for tiered LLM options.
+        """
+        from engine.pipeline import run_pipeline
+
+        mock_ux_input.append("3")  # Option 3: answer from local context
+
+        context = run_pipeline(
+            raw_input="How does this handle regulatory compliance?",
+            source="test"
+        )
+
+        # Recognition shows unknown
+        recognition = next(
+            e for e in telemetry_sink
+            if e.get("inferred", {}).get("stage") == "recognition"
+        )
+        assert recognition["intent"] == "unknown", \
+            f"Expected intent 'unknown', got '{recognition.get('intent')}'"
+
+        # Approval shows Kaizen fired
+        approval = next(
+            e for e in telemetry_sink
+            if e.get("inferred", {}).get("stage") == "approval"
+        )
+        label = approval.get("inferred", {}).get("label", "")
+        assert "kaizen" in label.lower(), \
+            f"Expected 'kaizen' in approval label, got '{label}'"
+
+        # Pipeline approved (Option 2 is valid)
+        assert context.approved is True
+
+    def test_unknown_input_routes_to_general_chat(self, telemetry_sink, mock_ux_input):
+        """
+        Option 3 (local context) routes to general_chat handler.
+        No LLM classification spend.
+
+        Option numbering accounts for tiered LLM options.
+        """
+        from engine.pipeline import run_pipeline
+
+        mock_ux_input.append("3")
+
+        context = run_pipeline(
+            raw_input="What is your architecture?",
+            source="test"
+        )
+
+        assert context.intent == "general_chat", \
+            f"Option 2 should set intent to 'general_chat', got '{context.intent}'"
+        assert context.zone == "green", \
+            f"Option 2 should set zone to 'green', got '{context.zone}'"
+
+
+class TestConfigDrivenRouting:
+    """
+    Test 6: Config-Driven Routing — Option 3 Sub-Menu
+
+    White paper Part III ("Declarative Behavior Governance"): "All behavior
+    lives in declarative configuration, not imperative code. The test: can
+    a non-technical domain expert alter the system's behavior by editing a
+    config file, without a deploy?"
+
+    The sub-menu options come from clarification.yaml, not hardcoded strings.
+    """
+
+    def test_option4_shows_config_menu(self, telemetry_sink, mock_ux_input):
+        """
+        Option 4 → config sub-menu → selection resolves to known intent.
+
+        Proves the consent architecture is declarative: clarification.yaml
+        defines the fallback options, routing.config defines the handlers.
+
+        Option numbering accounts for tiered LLM options.
+        """
+        from engine.pipeline import run_pipeline
+
+        mock_ux_input.append("4")  # Show what you can help with
+        mock_ux_input.append("1")  # First sub-menu option
+
+        context = run_pipeline(
+            raw_input="xyzzy plugh nothing",
+            source="test"
+        )
+
+        # Recognition shows unknown
+        recognition = next(
+            e for e in telemetry_sink
+            if e.get("inferred", {}).get("stage") == "recognition"
+        )
+        assert recognition["intent"] == "unknown"
+
+        # After sub-menu, intent resolves (not unknown)
+        assert context.intent != "unknown", \
+            f"Sub-menu should resolve to a known intent, got '{context.intent}'"
+        assert context.approved is True
+
+        # Handler set from routing.config
+        routing_info = context.entities.get("routing", {})
+        assert routing_info.get("handler") is not None, \
+            "Sub-menu should set a handler from routing.config"
+
+
+    def test_option5_cancels_pipeline(self, telemetry_sink, mock_ux_input):
+        """
+        Option 5 (rephrase) cancels the pipeline gracefully.
+
+        White paper Part III ("Sovereignty Guardrails"): the system
+        "cannot unilaterally grant itself new authority." If the operator
+        says rephrase, the pipeline halts.
+
+        Option numbering accounts for tiered LLM options.
+        """
+        from engine.pipeline import run_pipeline
+
+        mock_ux_input.append("5")
+
+        context = run_pipeline(
+            raw_input="completely nonsensical gibberish here",
+            source="test"
+        )
+
+        assert context.approved is False, \
+            "Option 5 should not approve the pipeline"
+        assert context.result.get("status") == "cancelled", \
+            f"Expected status 'cancelled', got '{context.result.get('status')}'"
+
+    def test_andon_fires_for_low_confidence(self, telemetry_sink, mock_ux_input):
+        """
+        Unknown input with zero confidence triggers Kaizen consent flow.
+
+        White paper Part III ("Digital Jidoka"): "When any stage of the
+        pipeline degrades... the system stops."
+
+        Option numbering accounts for tiered LLM options.
+        """
+        from engine.pipeline import run_pipeline
+
+        mock_ux_input.append("3")  # Option 3 (local context) to continue
+
+        context = run_pipeline(
+            raw_input="something that definitely won't match any keywords",
+            source="test"
+        )
+
+        recognition = next(
+            e for e in telemetry_sink
+            if e.get("inferred", {}).get("stage") == "recognition"
+        )
+        confidence = recognition.get("confidence", 1.0)
+        assert confidence == 0.0 or recognition["intent"] == "unknown", \
+            f"Low confidence input should be 'unknown'"
+
+        assert "kaizen_fired" in context.events, \
+            f"Kaizen should fire for low confidence, events: {context.events}"

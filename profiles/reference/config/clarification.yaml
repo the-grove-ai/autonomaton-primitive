@@ -1,0 +1,18 @@
+# clarification.yaml
+# Fallback options when the Andon Gate fires for ambiguous input.
+# These feed the Kaizen proposal flow in Stage 4.
+# Each option resolves to an intent in THIS profile's routing.config.
+
+fallback_options:
+  "1":
+    label: "Learn how this system works"
+    intent: "explain_system"
+  "2":
+    label: "Start a conversation"
+    intent: "general_chat"
+  "3":
+    label: "Check system status"
+    intent: "dock_status"
+  "4":
+    label: "I'll rephrase with more context"
+    intent: null
