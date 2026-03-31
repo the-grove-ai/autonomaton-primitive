@@ -1,27 +1,29 @@
 """
 effectors.py - MCP Effector Layer
 
-External actions (Calendar, Gmail, etc.) are handled exclusively via
-Model Context Protocol (MCP) servers. Every MCP action is strictly
-governed by Zone classification.
+External actions are handled via Model Context Protocol (MCP) servers.
+Every MCP action is strictly governed by Zone classification.
 
 CRITICAL: The most restrictive zone always wins.
 
-Sprint 3: Real Google API integration via google-api-python-client.
-OAuth tokens are stored in profiles/{profile}/config/auth/
+Architecture:
+  - ConfigLoader reads mcp.config for zone-per-capability declarations
+  - compute_effective_zone() applies most-restrictive-wins rule
+  - Pipeline Stage 4 enforces approval before execution reaches here
+  - MCPClient is the adapter interface — stub by default, real adapters plug in
+
+To connect a real service, implement a handler in MCPClient.execute()
+and register it in the service registry. See mcp.config for governance
+declarations.
 """
 
 import yaml
-import os
-import base64
 from pathlib import Path
 from typing import Optional, Any
 from dataclasses import dataclass
-from email.mime.text import MIMEText
 
 from engine.telemetry import log_event
 from engine.profile import get_config_dir
-# Note: ask_jidoka removed in Sprint 3.5 - Zone governance now handled by pipeline Stage 4
 
 
 # Zone priority (higher = more restrictive)
@@ -122,10 +124,7 @@ class ConfigLoader:
 
     @classmethod
     def get_server_scopes(cls, server: str) -> list:
-        """Load OAuth scopes for a server from mcp.config.
-
-        Returns list of scope strings, or empty list if not configured.
-        """
+        """Load OAuth scopes for a server from mcp.config."""
         if cls._mcp_config is None:
             cls.load_mcp_config()
         if cls._mcp_config is None:
@@ -159,144 +158,6 @@ class ConfigLoader:
         cls._mcp_config = None
         cls._zones_schema = None
         cls._config_dir = None
-
-
-# =========================================================================
-# Google API Service Management
-# =========================================================================
-
-
-def get_auth_dir() -> Path:
-    """Get the auth directory for OAuth token storage."""
-    auth_dir = get_config_dir() / "auth"
-    auth_dir.mkdir(parents=True, exist_ok=True)
-    return auth_dir
-
-
-def get_google_calendar_service():
-    """
-    Get authenticated Google Calendar service.
-
-    Uses OAuth2 credentials stored in profiles/{profile}/config/auth/.
-    If no valid token exists, initiates OAuth flow.
-
-    Returns:
-        Google Calendar API service object or None if auth fails
-    """
-    try:
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
-        from googleapiclient.discovery import build
-    except ImportError:
-        # Google API libraries not installed
-        return None
-
-    # Load scopes from config (fallback for missing config)
-    scopes = ConfigLoader.get_server_scopes("google_calendar")
-    if not scopes:
-        scopes = ['https://www.googleapis.com/auth/calendar']
-
-    token_path = get_auth_dir() / "calendar_token.json"
-    credentials_path = get_auth_dir() / "credentials.json"
-
-    creds = None
-
-    # Load existing token
-    if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
-
-    # Refresh or get new token
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception:
-                creds = None
-
-        if not creds:
-            if not credentials_path.exists():
-                # No credentials file - cannot authenticate
-                return None
-
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(credentials_path), scopes
-            )
-
-            # Use console flow for headless environments
-            if is_headless_environment():
-                creds = flow.run_console()
-            else:
-                creds = flow.run_local_server(port=0)
-
-        # Save the token
-        with open(token_path, 'w') as token_file:
-            token_file.write(creds.to_json())
-
-    return build('calendar', 'v3', credentials=creds)
-
-
-def get_gmail_service():
-    """
-    Get authenticated Gmail service.
-
-    Uses OAuth2 credentials stored in profiles/{profile}/config/auth/.
-    If no valid token exists, initiates OAuth flow.
-
-    Returns:
-        Gmail API service object or None if auth fails
-    """
-    try:
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
-        from googleapiclient.discovery import build
-    except ImportError:
-        # Google API libraries not installed
-        return None
-
-    # Load scopes from config (fallback for missing config)
-    scopes = ConfigLoader.get_server_scopes("gmail")
-    if not scopes:
-        scopes = ['https://www.googleapis.com/auth/gmail.modify']
-
-    token_path = get_auth_dir() / "gmail_token.json"
-    credentials_path = get_auth_dir() / "credentials.json"
-
-    creds = None
-
-    # Load existing token
-    if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
-
-    # Refresh or get new token
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception:
-                creds = None
-
-        if not creds:
-            if not credentials_path.exists():
-                # No credentials file - cannot authenticate
-                return None
-
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(credentials_path), scopes
-            )
-
-            # Use console flow for headless environments
-            if is_headless_environment():
-                creds = flow.run_console()
-            else:
-                creds = flow.run_local_server(port=0)
-
-        # Save the token
-        with open(token_path, 'w') as token_file:
-            token_file.write(creds.to_json())
-
-    return build('gmail', 'v1', credentials=creds)
 
 
 # =========================================================================
@@ -342,24 +203,9 @@ def format_action_description(server: str, capability: str, payload: dict) -> st
     return f"{capability} via {server_name}: {payload}"
 
 
-def is_headless_environment() -> bool:
-    """
-    Detect if running in a headless environment (Docker, SSH, etc.).
-
-    Returns True if no display is available for browser OAuth.
-    """
-    import os
-
-    # Check common headless indicators
-    if os.environ.get("DOCKER_CONTAINER"):
-        return True
-    if os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY"):
-        return True
-    if not os.environ.get("DISPLAY") and os.name != "nt":
-        return True
-
-    return False
-
+# =========================================================================
+# MCP Client — Stub Adapter
+# =========================================================================
 
 @dataclass
 class AuthState:
@@ -372,15 +218,14 @@ class AuthState:
 
 class MCPClient:
     """
-    Generic MCP client wrapper.
+    MCP client adapter.
 
-    In Sprint 2, this is a stub that simulates MCP connections.
-    Future sprints will implement actual MCP protocol communication.
+    Stub implementation — accepts any server/capability and returns
+    structured results. Real adapters (Google Calendar, Gmail, etc.)
+    plug into the service registry in execute().
 
-    OAUTH HANDLING:
-    When running in headless environments (Docker, SSH), the client
-    will output an auth URL to the console rather than attempting
-    to open a browser. The Operator can then present this to the user.
+    The governance layer (zone computation, approval gates) lives in
+    pipeline Stage 4. This layer handles connection and execution only.
     """
 
     def __init__(self, server: str):
@@ -388,122 +233,22 @@ class MCPClient:
         self.config = ConfigLoader.get_server_config(server)
         self.connected = False
         self.auth_state = AuthState()
-        self.headless = is_headless_environment()
 
     def connect(self) -> bool:
-        """
-        Initialize connection to the MCP server.
-
-        Sprint 2: Stub implementation.
-        For OAuth servers in headless mode, generates auth URL.
-        """
+        """Connect to the MCP server. Stub: always succeeds if configured."""
         if not self.config:
             return False
-
-        status = self.config.get("status", "stub")
-        auth_config = self.config.get("auth", {})
-
-        if status == "stub":
-            # Check if this would require OAuth in production
-            if auth_config.get("type") == "oauth2" and self.headless:
-                # Simulate OAuth URL generation for headless environments
-                self.auth_state = self._generate_headless_auth()
-                if self.auth_state.requires_user_action:
-                    self._print_auth_instructions()
-
-            # Simulate successful connection for stub servers
-            self.connected = True
-            return True
-
-        # Future: Actual MCP connection logic with real OAuth
-        return False
-
-    def _generate_headless_auth(self) -> AuthState:
-        """
-        Generate OAuth auth state for headless environments.
-
-        In production, this would generate a real OAuth URL.
-        Sprint 2: Returns stub auth state.
-        """
-        server_name = self.config.get("name", self.server)
-        scopes = self.config.get("auth", {}).get("scopes", [])
-
-        # Stub: Simulate that auth is already complete
-        # In production, this would check token validity
-        return AuthState(
-            authenticated=True,  # Stub assumes auth is done
-            auth_url=None,
-            requires_user_action=False
-        )
-
-    def _generate_real_auth_url(self) -> AuthState:
-        """
-        Generate a real OAuth authorization URL.
-
-        This would be called in production when tokens are missing/expired.
-        Returns an AuthState with the URL for user action.
-
-        Sprint 2: Stub - shows what production would do.
-        """
-        server_name = self.config.get("name", self.server)
-        scopes = self.config.get("auth", {}).get("scopes", [])
-
-        # In production, this would call the actual OAuth library
-        # to generate a proper authorization URL
-        mock_url = f"https://accounts.google.com/oauth/authorize?scope={'+'.join(scopes)}&client_id=STUB"
-
-        return AuthState(
-            authenticated=False,
-            auth_url=mock_url,
-            requires_user_action=True
-        )
-
-    def _print_auth_instructions(self) -> None:
-        """
-        Print OAuth instructions for headless environments.
-
-        This allows Docker/SSH users to authenticate via external browser.
-        """
-        if not self.auth_state.auth_url:
-            return
-
-        server_name = self.config.get("name", self.server)
-        print()
-        print("=" * 60)
-        print(f"  AUTHENTICATION REQUIRED: {server_name}")
-        print("=" * 60)
-        print()
-        print(f"  I need permission to access your {server_name}.")
-        print("  Please click this link to authorize:")
-        print()
-        print(f"  {self.auth_state.auth_url}")
-        print()
-        print("  After authorizing, the session will continue.")
-        print("=" * 60)
-        print()
-
-    def request_auth(self) -> AuthState:
-        """
-        Request authentication for servers that need it.
-
-        Call this when you need to prompt the user for OAuth.
-        Returns AuthState with URL if user action is required.
-        """
-        if self.auth_state.authenticated:
-            return self.auth_state
-
-        self.auth_state = self._generate_real_auth_url()
-        if self.auth_state.requires_user_action:
-            self._print_auth_instructions()
-
-        return self.auth_state
+        self.connected = True
+        self.auth_state = AuthState(authenticated=True)
+        return True
 
     def execute(self, capability: str, payload: dict) -> dict:
         """
         Execute a capability on the MCP server.
 
-        Sprint 3: Real Google API integration for supported servers.
-        Falls back to stub for unsupported capabilities.
+        Returns a structured result dict. The stub adapter returns
+        success with a marker indicating no real execution occurred.
+        Real adapters register in the service registry below.
         """
         if not self.connected:
             return {
@@ -519,248 +264,24 @@ class MCPClient:
                 "error": f"Capability '{capability}' not supported by {self.server}"
             }
 
-        # Service implementation registry — maps server names to methods.
-        # The registry is internal to the effector layer. The server NAMES
-        # come from mcp.config. The IMPLEMENTATIONS are engine code.
-        _service_registry = {
-            "google_calendar": self._execute_calendar,
-            "gmail": self._execute_gmail,
-        }
+        # Stub: return structured result showing what would execute.
+        # To add a real adapter, register a handler method here:
+        #
+        #   _service_registry = {
+        #       "my_service": self._execute_my_service,
+        #   }
+        #   handler = _service_registry.get(self.server)
+        #   if handler:
+        #       return handler(capability, payload)
 
-        handler = _service_registry.get(self.server)
-        if handler:
-            return handler(capability, payload)
-
-        # Fallback to stub for unimplemented servers
         return {
             "success": True,
             "stub": True,
             "server": self.server,
             "capability": capability,
             "payload": payload,
-            "message": f"[STUB] Would execute {capability} on {self.server}"
+            "message": f"MCP stub — see mcp.config for governance declarations"
         }
-
-    def _execute_calendar(self, capability: str, payload: dict) -> dict:
-        """
-        Execute Google Calendar API operations.
-        """
-        service = get_google_calendar_service()
-
-        if service is None:
-            # Fall back to stub if API not available
-            return {
-                "success": True,
-                "stub": True,
-                "message": f"[STUB - No Google API] Would execute {capability}",
-                "payload": payload
-            }
-
-        try:
-            if capability == "create_event":
-                # Build event from payload
-                event = {
-                    'summary': payload.get('summary', 'Untitled Event'),
-                    'start': payload.get('start', {}),
-                    'end': payload.get('end', {}),
-                }
-                if payload.get('location'):
-                    event['location'] = payload['location']
-                if payload.get('description'):
-                    event['description'] = payload['description']
-
-                result = service.events().insert(
-                    calendarId='primary',
-                    body=event
-                ).execute()
-
-                return {
-                    "success": True,
-                    "server": self.server,
-                    "capability": capability,
-                    "event_id": result.get('id'),
-                    "html_link": result.get('htmlLink'),
-                    "message": f"Created event: {result.get('summary')}"
-                }
-
-            elif capability == "list_events":
-                # List upcoming events
-                from datetime import datetime
-                now = datetime.utcnow().isoformat() + 'Z'
-                max_results = payload.get('max_results', 10)
-
-                result = service.events().list(
-                    calendarId='primary',
-                    timeMin=now,
-                    maxResults=max_results,
-                    singleEvents=True,
-                    orderBy='startTime'
-                ).execute()
-
-                events = result.get('items', [])
-                return {
-                    "success": True,
-                    "server": self.server,
-                    "capability": capability,
-                    "events": events,
-                    "count": len(events),
-                    "message": f"Retrieved {len(events)} events"
-                }
-
-            elif capability == "delete_event":
-                event_id = payload.get('event_id')
-                if not event_id:
-                    return {"success": False, "error": "Missing event_id"}
-
-                service.events().delete(
-                    calendarId='primary',
-                    eventId=event_id
-                ).execute()
-
-                return {
-                    "success": True,
-                    "server": self.server,
-                    "capability": capability,
-                    "event_id": event_id,
-                    "message": f"Deleted event: {event_id}"
-                }
-
-            elif capability == "update_event":
-                event_id = payload.get('event_id')
-                if not event_id:
-                    return {"success": False, "error": "Missing event_id"}
-
-                # Get existing event
-                event = service.events().get(
-                    calendarId='primary',
-                    eventId=event_id
-                ).execute()
-
-                # Update fields from payload
-                for key in ['summary', 'location', 'description', 'start', 'end']:
-                    if key in payload:
-                        event[key] = payload[key]
-
-                result = service.events().update(
-                    calendarId='primary',
-                    eventId=event_id,
-                    body=event
-                ).execute()
-
-                return {
-                    "success": True,
-                    "server": self.server,
-                    "capability": capability,
-                    "event_id": event_id,
-                    "message": f"Updated event: {result.get('summary')}"
-                }
-
-        except Exception as e:
-            return {
-                "success": False,
-                "server": self.server,
-                "capability": capability,
-                "error": str(e)
-            }
-
-        return {"success": False, "error": f"Unknown capability: {capability}"}
-
-    def _execute_gmail(self, capability: str, payload: dict) -> dict:
-        """
-        Execute Gmail API operations.
-        """
-        service = get_gmail_service()
-
-        if service is None:
-            # Fall back to stub if API not available
-            return {
-                "success": True,
-                "stub": True,
-                "message": f"[STUB - No Google API] Would execute {capability}",
-                "payload": payload
-            }
-
-        try:
-            if capability == "send_email":
-                # Build email message
-                to = payload.get('to', '')
-                subject = payload.get('subject', '')
-                body = payload.get('body', '')
-
-                message = MIMEText(body)
-                message['to'] = to
-                message['subject'] = subject
-
-                raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-                send_message = {'raw': raw}
-
-                result = service.users().messages().send(
-                    userId='me',
-                    body=send_message
-                ).execute()
-
-                return {
-                    "success": True,
-                    "server": self.server,
-                    "capability": capability,
-                    "message_id": result.get('id'),
-                    "thread_id": result.get('threadId'),
-                    "message": f"Sent email: {subject}"
-                }
-
-            elif capability == "draft_email":
-                # Create email draft
-                to = payload.get('to', '')
-                subject = payload.get('subject', '')
-                body = payload.get('body', '')
-
-                message = MIMEText(body)
-                message['to'] = to
-                message['subject'] = subject
-
-                raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-                draft_body = {'message': {'raw': raw}}
-
-                result = service.users().drafts().create(
-                    userId='me',
-                    body=draft_body
-                ).execute()
-
-                return {
-                    "success": True,
-                    "server": self.server,
-                    "capability": capability,
-                    "draft_id": result.get('id'),
-                    "message": f"Created draft: {subject}"
-                }
-
-            elif capability == "list_threads":
-                max_results = payload.get('max_results', 10)
-
-                result = service.users().threads().list(
-                    userId='me',
-                    maxResults=max_results
-                ).execute()
-
-                threads = result.get('threads', [])
-                return {
-                    "success": True,
-                    "server": self.server,
-                    "capability": capability,
-                    "threads": threads,
-                    "count": len(threads),
-                    "message": f"Retrieved {len(threads)} threads"
-                }
-
-        except Exception as e:
-            return {
-                "success": False,
-                "server": self.server,
-                "capability": capability,
-                "error": str(e)
-            }
-
-        return {"success": False, "error": f"Unknown capability: {capability}"}
 
     def disconnect(self) -> None:
         """Disconnect from the MCP server."""
@@ -788,23 +309,17 @@ def execute_mcp_action(
     """
     Execute an MCP action (post-approval).
 
-    CRITICAL ARCHITECTURAL CHANGE (Sprint 3.5):
-    - Zone governance moved to pipeline Stage 4
-    - This function only handles authentication and execution
-    - Approval is already granted by the pipeline before this is called
-
-    The effector layer responsibility is:
-    1. Authentication (OAuth token handling)
-    2. API execution
+    Zone governance is handled by pipeline Stage 4 before this is called.
+    This function handles:
+    1. Connection to the MCP server
+    2. Capability execution
     3. Execution telemetry
 
-    Zone computation and Jidoka prompts are handled by Stage 4.
-
     Args:
-        server: MCP server name (e.g., 'google_calendar', 'gmail')
-        capability: The capability to invoke (e.g., 'create_event', 'send_email')
+        server: MCP server name (from mcp.config)
+        capability: The capability to invoke
         payload: Data to pass to the capability
-        domain: The domain context (for telemetry only)
+        domain: The domain context (for telemetry)
 
     Returns:
         MCPActionResult with execution outcome
@@ -814,7 +329,7 @@ def execute_mcp_action(
     domain_zone = ConfigLoader.get_domain_zone(domain)
     effective_zone = compute_effective_zone(server_zone, domain_zone)
 
-    # Log the execution attempt (governance already handled by Stage 4)
+    # Log the execution attempt
     log_event(
         source="effector_execution_start",
         raw_transcript=f"MCP action: {server}.{capability}",
@@ -827,7 +342,7 @@ def execute_mcp_action(
         }
     )
 
-    # Step 1: Connect to MCP server (handles OAuth if needed)
+    # Step 1: Connect to MCP server
     client = get_mcp_client(server)
     if not client.connected:
         if not client.connect():
@@ -843,7 +358,7 @@ def execute_mcp_action(
                 capability=capability,
                 payload=payload,
                 effective_zone=effective_zone,
-                approved=True,  # Approval was handled by pipeline
+                approved=True,
                 error=f"Failed to connect to {server}"
             )
 
@@ -851,7 +366,6 @@ def execute_mcp_action(
     try:
         execution_result = client.execute(capability, payload)
     except Exception as e:
-        # Log execution failure
         log_event(
             source="effector_error",
             raw_transcript=f"MCP execution failed: {server}.{capability}",
@@ -892,7 +406,7 @@ def execute_mcp_action(
         capability=capability,
         payload=payload,
         effective_zone=effective_zone,
-        approved=True,  # Approval was handled by pipeline Stage 4
+        approved=True,
         result=execution_result,
         error=execution_result.get("error")
     )

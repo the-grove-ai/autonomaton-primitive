@@ -233,15 +233,15 @@ class TestGoogleAPIIntegration:
     SPRINT 3.5: Effectors no longer handle zone governance.
     These tests verify direct effector execution after approval.
 
-    These tests require MCP config. Skipped in reference profile.
+    These tests require a live MCP adapter. Skipped under stub adapter.
     """
 
-    @pytest.mark.skip(reason="reference profile has no MCP config")
+    @pytest.mark.skip(reason="Stub adapter — demo MCP server sprint will un-skip")
     def test_calendar_create_event_calls_api(self):
         """create_event capability should call the Google Calendar API."""
         pass
 
-    @pytest.mark.skip(reason="reference profile has no MCP config")
+    @pytest.mark.skip(reason="Stub adapter — demo MCP server sprint will un-skip")
     def test_gmail_send_email_calls_api(self):
         """send_email capability should call the Gmail API."""
         pass
@@ -264,7 +264,7 @@ class TestOAuth2TokenPersistence:
         assert "reference" in str(auth_dir)
         assert auth_dir.name == "auth"
 
-    @pytest.mark.skip(reason="reference profile has no MCP config")
+    @pytest.mark.skip(reason="Stub adapter — demo MCP server sprint will un-skip")
     def test_token_loaded_on_mcp_connect(self):
         """When connecting to an MCP server, existing tokens should be loaded."""
         pass
@@ -293,7 +293,7 @@ class TestUnifiedGovernanceSprintThreePointFive:
         assert not hasattr(effectors_module, 'ask_jidoka'), \
             "ask_jidoka should not be imported in effectors.py"
 
-    @pytest.mark.skip(reason="reference profile has no MCP config")
+    @pytest.mark.skip(reason="Stub adapter — demo MCP server sprint will un-skip")
     def test_execute_mcp_action_succeeds_without_governance_check(self):
         """execute_mcp_action() should execute directly without governance."""
         pass
@@ -320,7 +320,7 @@ class TestUnifiedGovernanceSprintThreePointFive:
         assert context.approved is False
         assert context.result.get("status") == "cancelled"
 
-    @pytest.mark.skip(reason="reference profile has no MCP config")
+    @pytest.mark.skip(reason="Stub adapter — demo MCP server sprint will un-skip")
     def test_effector_only_handles_auth_not_governance(self):
         """Effector layer handles auth, not governance."""
         pass
