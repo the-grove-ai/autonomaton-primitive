@@ -1,6 +1,5 @@
 # voice.yaml — Reference Profile Voice
-# OOBE: Out-of-box experience enhancement.
-# Core pattern requires only: routing.config, zones.schema, telemetry.log
+# OOBE: Demo enhancement. Core pattern requires only: routing.config, zones.schema, telemetry.jsonl
 
 identity:
   name: "The Autonomaton"

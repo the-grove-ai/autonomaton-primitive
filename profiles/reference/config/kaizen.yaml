@@ -1,4 +1,5 @@
 # kaizen.yaml
+# OOBE: Demo enhancement. Core pattern requires only: routing.config, zones.schema, telemetry.jsonl
 # Kaizen improvement proposal options.
 # Content only — the Andon display frame is pipeline infrastructure.
 # Options rendered inside the Kaizen beat when intent is unknown.

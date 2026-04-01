@@ -1,4 +1,5 @@
 # profile.yaml — Reference Implementation
+# OOBE: Demo enhancement. Core pattern requires only: routing.config, zones.schema, telemetry.jsonl
 # Profile-level flags controlling REPL presentation and startup behavior.
 # These flags are read by the REPL layer, not the engine.
 

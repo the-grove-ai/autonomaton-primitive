@@ -1,4 +1,5 @@
 # tips.yaml — Contextual Tips for Reference Profile
+# OOBE: Demo enhancement. Core pattern requires only: routing.config, zones.schema, telemetry.jsonl
 # Each tip fires once per session based on trigger conditions.
 # The tip engine evaluates triggers against PipelineContext after each run.
 

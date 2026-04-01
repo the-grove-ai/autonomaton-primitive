@@ -1,4 +1,5 @@
 # models.yaml - LLM Model Configuration
+# OOBE: Demo enhancement. Core pattern requires only: routing.config, zones.schema, telemetry.jsonl
 #
 # Purity v2: Externalize model IDs for Cognitive Agnosticism
 #

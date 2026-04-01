@@ -1,1 +1,15 @@
-cache: {}
+cache:
+  0eccdc7a724a7bbc:
+    intent: explain_system
+    domain: system
+    zone: green
+    handler: general_chat
+    handler_args: {}
+    intent_type: informational
+    confirmed_count: 1
+    last_confirmed: '2026-04-01T01:30:42.478997+00:00'
+    original_input: how does this software work?
+    confidence: 0.92
+    entities: {}
+    sentiment: neutral
+    pattern_label: architecture.overview

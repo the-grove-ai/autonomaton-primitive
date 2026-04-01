@@ -1,4 +1,5 @@
 # ============================================================
+# OOBE: Demo enhancement. Core pattern requires only: routing.config, zones.schema, telemetry.jsonl
 # ux.yaml — Reference Profile UX Configuration
 # ============================================================
 # Controls informational displays that make the architecture
