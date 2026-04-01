@@ -105,21 +105,14 @@ def _render_stage_from_event(lines: list, event: dict,
             intent_display = intent
 
         is_cache = method == "cache"
-        # V-018: Compute cost from models.yaml (Config Over Code)
-        if tier < 2 or is_cache:
-            cost = "$0.00"
-        else:
-            from engine.llm_client import estimate_turn_cost
-            estimated = estimate_turn_cost(tier)
-            cost = f"~${estimated:.4f}"
         cache_marker = f" {_c.GREEN}✓{_c.RESET}" if is_cache else ""
 
         # V-024: Stage 2 uses WHITE (same as Kaizen — classification is calm)
+        # V-025: Cost removed from recognition — actual cost shown at Stage 5
         lines.append(
             f"  {_c.DIM}│{_c.RESET} {_c.WHITE}2{_c.RESET} Recognition "
             f"{_c.DIM}intent:{_c.RESET}{intent_display} "
-            f"{_c.DIM}T{tier}{_c.RESET} {method}{cache_marker} "
-            f"{_c.DIM}{cost}{_c.RESET}")
+            f"{_c.DIM}T{tier}{_c.RESET} {method}{cache_marker}")
         if level in ("medium", "full") and conf > 0:
             lines.append(
                 f"  {_c.DIM}│{_c.RESET}             "
@@ -153,11 +146,14 @@ def _render_stage_from_event(lines: list, event: dict,
 
     elif stage == "execution":
         handler = inf.get("handler", "passthrough")
+        # V-025: Show actual cost from telemetry event (no estimation)
+        cost_usd = event.get("cost_usd")
+        cost_display = f"${cost_usd:.4f}" if cost_usd and cost_usd > 0 else "$0.00"
         # V-024: Stage 5 uses GREEN (flow — execution is forward motion)
         lines.append(
             f"  {_c.DIM}│{_c.RESET} {_c.GREEN}5{_c.RESET} Execution   "
             f"{_c.DIM}handler:{_c.RESET}{handler} "
-            f"{_c.DIM}[executed]{_c.RESET}")
+            f"{_c.DIM}{cost_display}{_c.RESET}")
 
 
 def _format_ratchet_from_event(event: dict) -> str:
