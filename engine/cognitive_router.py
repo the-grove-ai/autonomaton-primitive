@@ -35,6 +35,7 @@ class RoutingResult:
     action_required: bool = True
     llm_metadata: dict = field(default_factory=dict)
     classification_source: str = "unknown"  # "cache" | "keyword" | "llm" | "unknown"
+    cached_response: Optional[str] = None  # Flywheel Stage 5: true Tier 0
 
 
 class CognitiveRouter:
@@ -134,7 +135,8 @@ class CognitiveRouter:
             intent_type=entry.get("intent_type", "actionable"),
             action_required=entry.get("intent_type") != "conversational",
             llm_metadata={"source": "pattern_cache", "cache_hash": input_hash},
-            classification_source="cache"
+            classification_source="cache",
+            cached_response=entry.get("cached_response"),
         )
 
     def _keyword_match(self, user_input: str) -> Optional[RoutingResult]:

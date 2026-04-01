@@ -254,7 +254,8 @@ class InvariantPipeline:
                 "extracted_args": routing_result.extracted_args or {},
                 "intent_type": routing_result.intent_type,
                 "action_required": routing_result.action_required,
-                "llm_metadata": routing_result.llm_metadata or {}
+                "llm_metadata": routing_result.llm_metadata or {},
+                "cached_response": routing_result.cached_response,
             }
         }
 
@@ -1053,6 +1054,22 @@ class InvariantPipeline:
 
         # Check for routing info from Stage 2
         routing_info = self.context.entities.get("routing", {})
+
+        # Flywheel Stage 5: True Tier 0 cached response
+        # If the cache entry includes a response, serve it directly.
+        # No dispatcher. No handler. No LLM. $0.00.
+        cached_response = routing_info.get("cached_response")
+        if cached_response:
+            self.context.executed = True
+            self.context.result = {
+                "status": "executed",
+                "message": cached_response,
+                "data": {"type": "cached_response", "source": "flywheel_execute"}
+            }
+            self.context.cost = 0.0
+            self._log_pipeline_completion()
+            return
+
         handler = routing_info.get("handler")
 
         if handler:
@@ -1075,6 +1092,7 @@ class InvariantPipeline:
         # Purity v2: Log completion with flat routing fields for auditability
         # THE RATCHET: Cache confirmed LLM classifications for Tier 0 lookup (purity-audit-v1)
         if self.context.executed:
+            self._capture_flywheel_response()
             self._log_pipeline_completion()
             self._write_to_pattern_cache()
 
@@ -1174,6 +1192,77 @@ class InvariantPipeline:
                 zone_context="green",
                 inferred={"error": str(e), "stage": "cache_write"}
             )
+
+    def _capture_flywheel_response(self) -> None:
+        """Flywheel Stage 5: Capture response for true Tier 0 execution.
+
+        After a Flywheel-approved cache hit executes successfully via handler,
+        write the response text back to the cache entry as cached_response.
+        Next time this input matches, the pipeline serves the cached response
+        directly — no handler, no LLM, $0.00.
+
+        Only captures when:
+        - classification_source == "cache"
+        - Cache entry source is "flywheel_approve"
+        - Cache entry does NOT already have cached_response
+        - Execution succeeded
+        - Response text is non-empty
+        """
+        if self.context.classification_source != "cache":
+            return
+        if not self.context.executed:
+            return
+
+        # Get the response text from the dispatch result
+        result = self.context.result or {}
+        response_text = result.get("message", "")
+        if not response_text or len(response_text) < 5:
+            return
+
+        # Get the cache hash from routing metadata
+        routing_info = self.context.entities.get("routing", {})
+        llm_metadata = routing_info.get("llm_metadata", {})
+        cache_hash = llm_metadata.get("cache_hash")
+        if not cache_hash:
+            return
+
+        import yaml
+        from datetime import datetime, timezone
+        from engine.profile import get_config_dir
+
+        try:
+            cache_path = get_config_dir() / "pattern_cache.yaml"
+            if not cache_path.exists():
+                return
+
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+
+            cache = data.get("cache", {})
+            entry = cache.get(cache_hash)
+            if not entry:
+                return
+
+            # Only capture for Flywheel-approved entries without existing cached response
+            if entry.get("source") != "flywheel_approve":
+                return
+            if entry.get("cached_response"):
+                return
+
+            # Write the response
+            entry["cached_response"] = response_text[:2000]
+            entry["response_captured_at"] = datetime.now(timezone.utc).isoformat()
+
+            data["cache"] = cache
+            with open(cache_path, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+            # Reload router cache
+            from engine.cognitive_router import get_router
+            get_router().load_cache()
+
+        except Exception:
+            pass  # Response capture failure is non-fatal
 
     def _execute_via_dispatcher(self, routing_info: dict) -> None:
         """
