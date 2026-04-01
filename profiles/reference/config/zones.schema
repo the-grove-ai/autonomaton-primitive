@@ -22,11 +22,19 @@ zones:
 
   red:
     approval: explicit_with_context
-    description: "High-stakes action requiring full context review"
+    description: "Full payload transparency. Explicit approval with heightened friction. No Kaizen proposals — the system does not suggest improvements here."
+    # NOTE: Red zone behavior is configurable per Config Over Code.
+    # The reference profile implements Red as "explicit approval with
+    # full payload transparency." An enterprise deployment could
+    # configure Red as "information only — system does not act"
+    # by implementing a custom approval handler that always returns
+    # false and routes execution to an external change management
+    # workflow. The zone model is declarative. The behavior follows.
     examples:
+      - "Build new skills (Pit Crew)"
       - "Delete records"
-      - "Financial operations"
-      - "System modifications"
+      - "Security modifications"
+      - "Production deployments"
 
 # Domain Schemas
 # Define your business domains here
